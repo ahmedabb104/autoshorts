@@ -12,15 +12,39 @@ assets, real posting, and the UI come after the system is proven.
 
 ## Phase 0 — Project skeleton
 
-- [ ] `uv` project init; `pyproject.toml` with pinned deps (langgraph, langchain-core,
+- [x] `uv` project init; `pyproject.toml` with pinned deps (langgraph, langchain-core,
       pydantic v2, fastapi, uvicorn, httpx, pytest, python-dotenv).
-- [ ] Create the directory layout from CLAUDE.md Section 3 (empty modules + docstrings).
-- [ ] `config.py`: `Settings` (pydantic-settings) reading env, including provider/tier
+      *Note: `uv` itself lives in a separate `.venv-tools/` venv so that `uv sync`
+      (which prunes non-project packages) cannot uninstall its own binary. The project
+      env is `.venv/`, driven by `UV_PROJECT_ENVIRONMENT=.venv`.*
+- [x] Create the directory layout from CLAUDE.md Section 3 (empty modules + docstrings).
+      *`ui/` deliberately not created — it belongs to Phase 3d.*
+- [x] `config.py`: `Settings` (pydantic-settings) reading env, including provider/tier
       selectors (`LLM_TIER`, `TTS_PROVIDER`, `VIDEO_PROVIDER`, `PUBLISH_PROVIDER`).
-- [ ] `.env.example` documenting every env var. README with run/test instructions.
-- [ ] CI-ish: a `make`/`uv run` task that runs `pytest` and a linter (ruff).
+      *33 settings. `LLM_TIER` implemented as a global tier override (`auto|draft|judge`,
+      default `auto`), not a model picker — the writer/grader split must survive it.
+      `LLM_DRAFT_MODEL`/`LLM_JUDGE_MODEL` have no defaults; `require_model()` raises at
+      use time. `Settings()` succeeds on an empty env, so tests need no secrets.*
+- [x] `.env.example` documenting every env var. README with run/test instructions.
+      *Verified 33/33 against `Settings.model_fields` — no missing, no extras.*
+- [x] CI-ish: a `make`/`uv run` task that runs `pytest` and a linter (ruff).
+      *`scripts/check.py` (ruff check → ruff format --check → pytest; `--fix` variant).
+      pytest exit 5 = warning, not failure. `Makefile` forwards to it for unix/CI;
+      `make` is not installed on the primary dev machine. `[project.scripts]` was tried
+      and does not work — `scripts/` isn't in the installed distribution.*
 
 **Done when:** repo installs clean, `pytest` runs (even with 0 tests), config loads from env.
+✅ **Phase 0 complete** — `uv sync --all-groups` clean, `scripts/check.py` green
+(ruff + 29 tests), config loads from env.
+
+Open questions surfaced during Phase 0, to settle in the phase that hits them:
+- **1a:** nothing creates the parent dir of `SQLITE_CHECKPOINT_PATH` (`data/`) — `config.py`
+  performs no filesystem side effects on purpose, so the checkpointer must `mkdir` it.
+- **1b:** `LLM_TIER` turned out to be a tier override, so there is still no
+  `LLM_PROVIDER` (openrouter|fake) selector for offline tests. Decide whether Phase 1b
+  wants one, or whether tests inject a fake provider directly.
+- **1c:** `EVAL_SCORE_THRESHOLD` is bounded `0-10` with default `7.0`. `rubric.py` must
+  either use that scale or the bound needs revisiting.
 
 ---
 

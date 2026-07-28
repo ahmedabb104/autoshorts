@@ -74,15 +74,15 @@ src/videoagent/
     graph.py          # build_graph(): nodes + edges + conditional edges + checkpointer
     nodes/
       ideation.py     # picks topic; retrieves past winners from memory (RAG)
-      scriptwriter.py # writes hook/body/CTA  (LLM: local tier)
-      eval_critic.py  # LLM-as-judge rubric score; drives the retry conditional edge (API tier)
+      scriptwriter.py # writes hook/body/CTA  (LLM: draft tier)
+      eval_critic.py  # LLM-as-judge rubric score; drives the retry conditional edge (judge tier)
       assets.py       # TTS + visuals via providers
       render.py       # ffmpeg render + QA gate (duration, aspect ratio, safety)
       approval.py     # human-in-the-loop interrupt()
       publish.py      # PublishProvider call; idempotent
       metrics.py      # ingest real performance data; write back to memory
   providers/
-    llm.py            # LLMProvider protocol + OllamaProvider, AnthropicProvider
+    llm.py            # LLMProvider protocol + OpenRouterProvider (draft + judge tiers)
     tts.py            # TTSProvider protocol + ElevenLabsProvider, PiperProvider
     video.py          # VideoProvider protocol + StockAssemblyProvider, GenerativeProvider
     publish.py        # PublishProvider protocol + FileProvider, YouTubeProvider, AggregatorProvider
