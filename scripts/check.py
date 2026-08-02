@@ -24,6 +24,11 @@ Usage::
     .venv/bin/python scripts/check.py                # Unix
     uv run scripts/check.py                          # either, via uv
     ... scripts/check.py --fix                       # autofix lint + format first
+    ... scripts/check.py --evals                     # + the real offline eval harness
+
+``--evals`` is opt-in because it spends one judge-tier LLM call per dataset example.
+The dataset and the harness arithmetic are checked by ``pytest`` on every run regardless;
+what ``--evals`` adds is the real model's agreement with the labels.
 """
 
 from __future__ import annotations
@@ -43,6 +48,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: pytest's exit code for "no tests were collected". Treated as a warning, not a
 #: failure: the suite is legitimately empty in early phases of the build plan.
 PYTEST_NO_TESTS_COLLECTED = 5
+
+#: `run_evals` exit code for "there is no judge model / API key to run against". Missing
+#: credentials are a local setup gap, not a code regression, so this warns rather than
+#: fails — otherwise the flag would be unusable for anyone without a key.
+EVALS_NOT_CONFIGURED = 2
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 
@@ -87,7 +97,7 @@ def _paint(text: str, status: str) -> str:
     return f"{_COLORS[status]}{text}\033[0m"
 
 
-def _steps(*, fix: bool) -> list[Step]:
+def _steps(*, fix: bool, evals: bool) -> list[Step]:
     py = sys.executable
     steps: list[Step] = []
     if fix:
@@ -107,6 +117,14 @@ def _steps(*, fix: bool) -> list[Step]:
             warn_codes={PYTEST_NO_TESTS_COLLECTED: "no tests collected"},
         )
     )
+    if evals:
+        steps.append(
+            Step(
+                "offline evals",
+                [py, "-m", "videoagent.evals.run_evals"],
+                warn_codes={EVALS_NOT_CONFIGURED: "no judge model or API key configured"},
+            )
+        )
     return steps
 
 
@@ -155,6 +173,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="autofix mode: run 'ruff check --fix' and 'ruff format' instead of the "
         "read-only checks, then run pytest.",
     )
+    parser.add_argument(
+        "--evals",
+        action="store_true",
+        help="also run the offline eval harness against the real judge model. Costs "
+        "one LLM call per dataset example, so it is opt-in rather than default. Run it "
+        "whenever you change a prompt, the rubric, or the threshold.",
+    )
     args = parser.parse_args(argv)
 
     missing = _missing_tools()
@@ -167,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    results = [_run(step) for step in _steps(fix=args.fix)]
+    results = [_run(step) for step in _steps(fix=args.fix, evals=args.evals)]
     _report(results)
 
     failures = [r for r in results if r.status == FAIL]

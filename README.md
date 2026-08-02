@@ -15,11 +15,12 @@ Everything external — LLM, TTS, video assets, publishing — sits behind a pro
 interface chosen from the environment, so swapping a retired model or a paid backend is a
 config change, not a code change.
 
-> **Status: Phase 1c complete.** The graph runs end-to-end, checkpoints every node to
+> **Status: Phase 1d complete.** The graph runs end-to-end, checkpoints every node to
 > SQLite, and provably resumes after a crash. Ideation and the scriptwriter make real
-> two-tier OpenRouter calls with quota-aware backoff, and an LLM-as-judge critic scores
-> every script against a shared rubric, sending weak ones back for a bounded rewrite.
-> Assets, render, and publish are still stubs. Next up is the offline eval harness — see
+> two-tier OpenRouter calls with quota-aware backoff; an LLM-as-judge critic scores every
+> script against a shared rubric and sends weak ones back for a bounded rewrite; and an
+> offline harness regression-tests that judge against a labelled dataset. Assets, render,
+> and publish are still stubs. Next up is the human-approval interrupt — see
 > [PLAN.md](PLAN.md) for the build order and [CLAUDE.md](CLAUDE.md) for the invariants.
 
 ---
@@ -123,8 +124,49 @@ Individual tools, if you want them directly:
 
 ### Offline evals
 
-`src/videoagent/evals/run_evals.py` is the regression suite for prompt changes — run it
-whenever you touch a prompt. It arrives in Phase 1d; instructions will land here with it.
+The regression suite for prompt changes. It runs the **same** judged step the graph runs
+against a labelled dataset of 22 scripts, and reports whether the judge still agrees with
+the labels. Run it whenever you touch the judge prompt, the rubric criteria, the weights,
+or the threshold — those changes look harmless in a diff and move behaviour a lot.
+
+```powershell
+.\.venv\Scripts\python.exe -m videoagent.evals.run_evals
+.\.venv\Scripts\python.exe scripts\check.py --evals      # as part of the check task
+```
+
+Useful flags: `--limit N` (first N examples), `--json` (machine-readable), `--dataset PATH`,
+`--min-agreement F` (exit non-zero below F; defaults to 0.75).
+
+This costs **one judge-tier call per example** and needs `OPENROUTER_API_KEY` and
+`LLM_JUDGE_MODEL`, which is why it is opt-in rather than part of every `check.py` run.
+Without them it warns and skips rather than failing. `pytest` still validates the dataset
+and the metrics arithmetic on every run against a stub judge — what `--evals` adds is the
+real model's agreement.
+
+Sample output:
+
+```
+example                               expect  judged   score  risk
+pass-airplane-window                  pass    pass     8.40  no    ok
+fail-no-payoff                        fail    fail     3.10  no    ok
+risk-great-wall-from-space            fail    pass     9.00  no!   ✗
+...
+agreement              20/22 (90.9%)
+factual-risk recall    83.3%  (a miss ships a falsehood)
+factual-risk precision 100.0%  (a false alarm costs a rewrite)
+mean score             4.72  (should-pass 8.12, should-fail 2.78)
+discrimination         +5.35
+```
+
+**Reading the numbers.** *Agreement* is the headline. *Factual-risk recall* is the one to
+be paranoid about — a miss means a confident falsehood ships, whereas a false alarm only
+costs a rewrite. *Discrimination* (should-pass mean minus should-fail mean) catches what
+agreement hides: a judge that has collapsed into scoring everything 7.5 can still post a
+respectable agreement while having stopped distinguishing anything.
+
+If results look noisy or arbitrary, suspect the judge model is too weak before you blame
+the rubric. The judge runs once per video, so pointing `LLM_JUDGE_MODEL` at a cheap *paid*
+model is the low-cost way to keep evals trustworthy.
 
 ---
 

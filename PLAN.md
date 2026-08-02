@@ -164,11 +164,39 @@ Decisions and findings from 1c:
 `status=FAILED` has that status overwritten by the next node, though `error` persists. A
 proper terminal-failure route deserves its own task.
 
-### 1d. Offline eval harness
-- [ ] `evals/dataset/`: ~15–25 labeled examples (script + expected judgment) as JSONL.
-- [ ] `evals/run_evals.py`: runs the judged step over the dataset, reports metrics
+### 1d. Offline eval harness ✅
+- [x] `evals/dataset/`: ~15–25 labeled examples (script + expected judgment) as JSONL.
+      *22 examples in `dataset/scripts.jsonl`: 8 should-pass, 6 craft failures (weak hook,
+      no payoff, unspeakable prose, listicle), 6 factually-risky-but-well-written, and 3
+      deliberate borderline cases. Every row carries a `note` explaining its label, so a
+      disagreement is debuggable rather than mysterious.*
+- [x] `evals/run_evals.py`: runs the judged step over the dataset, reports metrics
       (agreement / precision on the factual-risk flag / mean score). Prints a summary table.
-- [ ] Wire it into the test task so regressions surface. Document how to run it in README.
+      *Also reports factual-risk **recall** and **discrimination**, plus per-example rows
+      and run cost. Calls `rubric.score_script` — the identical function the graph calls
+      (4d), not a copy.*
+- [x] Wire it into the test task so regressions surface. Document how to run it in README.
+
+Decisions and findings from 1d:
+- **The real eval run is opt-in (`scripts/check.py --evals`), not part of every check.**
+  22 judge calls per invocation would burn the 1,000/day free quota within a few commits.
+  What *does* run on every `pytest`: the dataset loads and is well-formed, and the metrics
+  arithmetic is correct, both against a stub judge. Missing credentials warn rather than
+  fail, so the flag is usable without a key.
+- **Two metrics beyond the plan's list**, because agreement alone can look healthy while
+  the judge is broken:
+  - *factual-risk recall* — a miss ships a confident falsehood; a false alarm only costs a
+    rewrite. Recall is the asymmetric one.
+  - *discrimination* (should-pass mean − should-fail mean) — a judge that has collapsed
+    into scoring everything 7.5 still posts respectable agreement on a balanced set.
+- **The dataset is tested as an artifact**: class balance (25-60% passes, so a
+  reject-everything judge cannot score well), at least 4 risky examples, at least 4 craft
+  failures kept *distinct* from the risky ones, and every row carrying a note.
+- **Unparseable judge replies count as disagreement**, not as neutral. A judge that cannot
+  answer has failed at the job, and averaging it out would hide that.
+- `EvalExample` satisfies `rubric.ScriptLike` structurally, so dataset rows feed the graph's
+  scorer with no adapter — which is what the 1c decision to keep `rubric.py` independent of
+  `graph.state` bought.
 
 ### 1e. Human-approval interrupt + mocked publish
 - [ ] `nodes/approval.py`: `interrupt()` — graph pauses awaiting human resume.
