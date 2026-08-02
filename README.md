@@ -15,11 +15,12 @@ Everything external — LLM, TTS, video assets, publishing — sits behind a pro
 interface chosen from the environment, so swapping a retired model or a paid backend is a
 config change, not a code change.
 
-> **Status: Phase 1b complete.** The graph runs end-to-end, checkpoints every node to
+> **Status: Phase 1c complete.** The graph runs end-to-end, checkpoints every node to
 > SQLite, and provably resumes after a crash. Ideation and the scriptwriter make real
-> two-tier OpenRouter calls with quota-aware backoff; the remaining nodes are still stubs.
-> Next up is the eval critic and the retry loop — see [PLAN.md](PLAN.md) for the build
-> order and [CLAUDE.md](CLAUDE.md) for the architecture and its invariants.
+> two-tier OpenRouter calls with quota-aware backoff, and an LLM-as-judge critic scores
+> every script against a shared rubric, sending weak ones back for a bounded rewrite.
+> Assets, render, and publish are still stubs. Next up is the offline eval harness — see
+> [PLAN.md](PLAN.md) for the build order and [CLAUDE.md](CLAUDE.md) for the invariants.
 
 ---
 

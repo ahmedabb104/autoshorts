@@ -144,7 +144,9 @@ async def test_graph_runs_end_to_end_on_stubs(
     assert state.completed_nodes == list(NODE_NAMES)
     assert state.topic == "why the sky is blue"
     assert state.script is not None
-    assert state.eval_score == 8.0
+    assert state.eval_score == 9.0
+    assert state.eval_rubric is not None
+    assert state.retry_count == 0
     assert state.video_path is not None
     assert state.error is None
 
@@ -175,8 +177,13 @@ async def test_cost_ledger_accumulates(
         result = await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY, context=context)
 
     state = VideoState.model_validate(result)
-    assert [entry.node for entry in state.costs] == ["ideation", "scriptwriter", "assets"]
-    assert state.total_cost_usd == pytest.approx(0.004)
+    assert [entry.node for entry in state.costs] == [
+        "ideation",
+        "scriptwriter",
+        "eval_critic",
+        "assets",
+    ]
+    assert state.total_cost_usd == pytest.approx(0.006)
 
 
 # --------------------------------------------------------------------------------------

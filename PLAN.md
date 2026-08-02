@@ -41,8 +41,7 @@ Open questions surfaced during Phase 0, to settle in the phase that hits them:
 - ~~**1b:** no `LLM_PROVIDER` selector for offline tests.~~ **Resolved:** none is needed.
   Tests construct `GraphContext` with a fake provider directly, so there is no config
   switch that could accidentally ship pointing at a fake.
-- **1c:** `EVAL_SCORE_THRESHOLD` is bounded `0-10` with default `7.0`. `rubric.py` must
-  either use that scale or the bound needs revisiting.
+- ~~**1c:** `EVAL_SCORE_THRESHOLD` scale.~~ **Resolved:** the rubric uses 0-10, matching it.
 
 ---
 
@@ -122,17 +121,48 @@ Decisions and findings from 1b:
 - **`extract_json_object`** tolerates ``` fences and surrounding prose. Re-prompting a
   small model to remove a stray fence would cost quota for nothing.
 
-### 1c. Eval critic + retry loop  ← highest-value work
-- [ ] `evals/rubric.py`: the shared rubric (e.g. hook strength, clarity, factual-risk flag),
-      returning a structured score.
-- [ ] `nodes/eval_critic.py`: LLM-as-judge using the **judge** model (`LLM_JUDGE_MODEL`,
+### 1c. Eval critic + retry loop  ← highest-value work ✅
+- [x] `evals/rubric.py`: the shared rubric (e.g. hook strength, clarity, factual-risk flag),
+      returning a structured score. *Criteria: `hook_strength` (0.4 — a weak hook means
+      nothing else gets watched), `clarity` (0.3), `payoff` (0.3), plus a boolean
+      `factual_risk`. The module owns the criteria, the **prompt**, the **parser**, and the
+      **pass rule** — those are the parts that would silently drift between the inline
+      critic and the offline harness. The prompt is generated from `CRITERIA`, so the two
+      cannot disagree.*
+- [x] `nodes/eval_critic.py`: LLM-as-judge using the **judge** model (`LLM_JUDGE_MODEL`,
       distinctly stronger than the drafter); returns rubric score. Runs once per video, so
       pointing this one model at a cheap *paid* ID is the low-cost way to keep evals
       reliable if free judge models get throttled — it's a config change, no code change.
-- [ ] `graph/graph.py`: conditional edge — below threshold → back to `scriptwriter`
+      *Thin by design: it calls `rubric.score_script()` and writes the verdict. Judged at
+      `temperature=0.0` so the same script does not straddle the threshold on noise.*
+- [x] `graph/graph.py`: conditional edge — below threshold → back to `scriptwriter`
       (bounded, max 2 retries via the retry counter in state); at/above → continue.
-- [ ] Test: a deliberately weak script triggers the retry edge; a strong one does not;
-      retries are bounded.
+- [x] Test: a deliberately weak script triggers the retry edge; a strong one does not;
+      retries are bounded. *43 new tests, including the loop surviving a mid-retry resume.*
+
+Decisions and findings from 1c:
+- **`factual_risk` fails a script outright**, whatever the craft scores say. A beautifully
+  written falsehood is worse than a dull truth — the craft scores measure how effectively
+  it would be believed.
+- **Out-of-range judge scores are rejected, not clamped.** A model answering on a 0-100
+  scale would clamp to a perfect 10 and wave a bad script straight through, inverting the
+  result's meaning. Failing loudly is the safe direction.
+- **The critic owns `retry_count`, the router only reads it.** A LangGraph router cannot
+  write state, and inferring "am I a retry?" in the scriptwriter would store the same fact
+  twice and let the copies disagree.
+- **A judge outage does not trigger a scriptwriter retry.** Rewriting a fine script because
+  the grader was down would burn quota for nothing; the run continues unscored and the
+  human approval gate catches it.
+- **Exhausting the retry budget continues rather than failing the run.** The bound exists
+  to stop an infinite loop, not to discard a script a human might still accept. The run
+  carries its low score and notes onward and still cannot publish without approval.
+- **Resolved from Phase 0:** the rubric is on the 0-10 scale, matching
+  `EVAL_SCORE_THRESHOLD`'s bounds. A test asserts the criterion weights sum to 1.0, since
+  otherwise `overall` silently leaves that scale.
+
+**Known gap (not blocking 1d):** there is no error path in the graph. A node that sets
+`status=FAILED` has that status overwritten by the next node, though `error` persists. A
+proper terminal-failure route deserves its own task.
 
 ### 1d. Offline eval harness
 - [ ] `evals/dataset/`: ~15–25 labeled examples (script + expected judgment) as JSONL.

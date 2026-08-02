@@ -35,6 +35,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 
 from videoagent.config import CheckpointerBackend, Settings, get_settings
 from videoagent.graph.context import GraphContext
@@ -51,10 +52,13 @@ from videoagent.graph.state import CHECKPOINTED_TYPES, VideoState
 __all__ = [
     "DEFAULT_DURABILITY",
     "NODE_NAMES",
+    "RETRY_BRANCH_SOURCE",
+    "RETRY_TARGET",
     "build_graph",
     "build_serde",
     "open_checkpointer",
     "open_graph",
+    "route_after_eval",
 ]
 
 #: Write the checkpoint before the next node starts, rather than concurrently with it.
@@ -63,7 +67,11 @@ __all__ = [
 #: *completed* node, and only `"sync"` actually guarantees that.
 DEFAULT_DURABILITY: Final = "sync"
 
-#: The linear path, in execution order. Phase 1c inserts a branch after `eval_critic`.
+#: The node whose outcome branches: pass and continue, or loop back and rewrite.
+RETRY_BRANCH_SOURCE: Final = "eval_critic"
+RETRY_TARGET: Final = "scriptwriter"
+
+#: The linear path, in execution order. `eval_critic -> assets` is conditional.
 NODE_NAMES: Final[tuple[str, ...]] = (
     "ideation",
     "scriptwriter",
@@ -110,13 +118,50 @@ def build_graph(checkpointer: BaseCheckpointSaver[Any] | None = None) -> Compile
 
     builder.add_edge(START, sequence[0][0])
     for (previous, _), (following, _) in pairwise(sequence):
+        if previous == RETRY_BRANCH_SOURCE:
+            # Owned by the conditional edge below.
+            continue
         builder.add_edge(previous, following)
     builder.add_edge(sequence[-1][0], END)
 
-    # Phase 1c replaces the `eval_critic -> assets` edge above with a conditional edge
-    # back to `scriptwriter`, bounded by VideoState.retry_count.
+    continue_target = NODE_NAMES[NODE_NAMES.index(RETRY_BRANCH_SOURCE) + 1]
+    builder.add_conditional_edges(
+        RETRY_BRANCH_SOURCE,
+        route_after_eval,
+        # Naming both destinations keeps the retry loop visible in the rendered graph,
+        # which the operator console draws.
+        {RETRY_TARGET: RETRY_TARGET, continue_target: continue_target},
+    )
 
     return builder.compile(checkpointer=checkpointer)
+
+
+def route_after_eval(state: VideoState, runtime: Runtime[GraphContext]) -> str:
+    """Decide whether to rewrite the script or move on.
+
+    Three cases, in order:
+
+    1. The judge passed it — continue.
+    2. The judge rejected it and the retry budget is spent — continue anyway. The bound
+       exists so a model that dislikes everything cannot spin forever; the run carries its
+       low score and its notes onward, and the human approval gate is the real backstop.
+       Failing the run outright here would throw away a script a human might still accept.
+    3. Otherwise — back to the scriptwriter, which will see the rejected draft and the
+       critic's notes in its prompt.
+
+    An unscored script (the judge itself failed) takes case 2: retrying the *writer* would
+    not fix the *grader*.
+    """
+    settings = runtime.context.settings
+    continue_target = NODE_NAMES[NODE_NAMES.index(RETRY_BRANCH_SOURCE) + 1]
+
+    if state.eval_rubric is None:
+        return continue_target
+    if state.eval_rubric.passes(settings.eval_score_threshold):
+        return continue_target
+    if state.retry_count > settings.max_script_retries:
+        return continue_target
+    return RETRY_TARGET
 
 
 def build_serde() -> JsonPlusSerializer:

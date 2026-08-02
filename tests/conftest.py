@@ -16,9 +16,10 @@ import pytest
 from langchain_core.messages import BaseMessage
 
 from videoagent.config import LLMTier
+from videoagent.evals.rubric import CRITERIA
 from videoagent.providers.llm import LLMResponse, LLMUsage
 
-__all__ = ["FakeLLM", "LLMCall"]
+__all__ = ["FakeLLM", "LLMCall", "rubric_reply"]
 
 
 @dataclass
@@ -41,6 +42,33 @@ class LLMCall:
         return str(self.messages[-1].content)
 
 
+def rubric_reply(
+    *,
+    hook_strength: float = 9.0,
+    clarity: float = 9.0,
+    payoff: float = 9.0,
+    factual_risk: bool = False,
+    reason: str = "fake judgment",
+) -> str:
+    """A well-formed judge reply. Defaults to a comfortable pass.
+
+    Built from `CRITERIA` rather than hardcoded keys so that adding a criterion to the
+    rubric breaks these tests loudly instead of silently scoring three of four.
+    """
+    payload: dict[str, object] = {
+        criterion.key: {
+            "score": {"hook_strength": hook_strength, "clarity": clarity, "payoff": payoff}[
+                criterion.key
+            ],
+            "reason": reason,
+        }
+        for criterion in CRITERIA
+    }
+    payload["factual_risk"] = factual_risk
+    payload["factual_risk_reason"] = "unverifiable claim" if factual_risk else ""
+    return json.dumps(payload)
+
+
 def default_reply(call: LLMCall) -> str:
     """Answer based on which node is asking, so call *order* is not baked into tests.
 
@@ -49,6 +77,8 @@ def default_reply(call: LLMCall) -> str:
     """
     if "pick topics" in call.system:
         return "why aeroplane windows have a tiny hole in them"
+    if "grade scripts" in call.system:
+        return rubric_reply()
     if "write scripts" in call.system:
         return json.dumps(
             {

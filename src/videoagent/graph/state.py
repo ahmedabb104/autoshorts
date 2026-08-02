@@ -27,6 +27,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from videoagent.evals.rubric import CriterionScore, RubricScore
+
 __all__ = [
     "CHECKPOINTED_TYPES",
     "CostEntry",
@@ -112,8 +114,10 @@ class VideoState(BaseModel):
     retry_count: int = 0
 
     # --- Evaluation -----------------------------------------------------------------
-    #: Rubric score, 0-10, compared against EVAL_SCORE_THRESHOLD.
-    #: Phase 1c replaces this scalar with the structured score from `evals.rubric`.
+    #: The judge's full verdict: per-criterion scores and the factual-risk flag.
+    eval_rubric: RubricScore | None = None
+    #: The weighted overall, 0-10, mirrored out of `eval_rubric` because it is what the
+    #: retry edge compares against EVAL_SCORE_THRESHOLD and what the console displays.
     eval_score: float | None = None
     eval_notes: str | None = None
 
@@ -165,4 +169,11 @@ class VideoState(BaseModel):
 #: the allowlist tightening is a non-event for us.
 #:
 #: Anything new that lands in `VideoState` and is not a plain builtin belongs here.
-CHECKPOINTED_TYPES: Final = (VideoState, Script, CostEntry, RunStatus)
+CHECKPOINTED_TYPES: Final = (
+    VideoState,
+    Script,
+    CostEntry,
+    RunStatus,
+    RubricScore,
+    CriterionScore,
+)
