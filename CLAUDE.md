@@ -75,6 +75,8 @@ is changeable.
 src/videoagent/
   graph/
     state.py          # Pydantic state schema — the single source of truth for graph state
+    context.py        # GraphContext: runtime deps (LLM provider, settings) via LangGraph
+                      # `context`; NOT checkpointed. How nodes reach providers (4a).
     graph.py          # build_graph(): nodes + edges + conditional edges + checkpointer
     nodes/
       ideation.py     # picks topic; retrieves past winners from memory (RAG)

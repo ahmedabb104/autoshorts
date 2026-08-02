@@ -38,9 +38,9 @@ assets, real posting, and the UI come after the system is proven.
 (ruff + 29 tests), config loads from env.
 
 Open questions surfaced during Phase 0, to settle in the phase that hits them:
-- **1b:** `LLM_TIER` turned out to be a tier override, so there is still no
-  `LLM_PROVIDER` (openrouter|fake) selector for offline tests. Decide whether Phase 1b
-  wants one, or whether tests inject a fake provider directly.
+- ~~**1b:** no `LLM_PROVIDER` selector for offline tests.~~ **Resolved:** none is needed.
+  Tests construct `GraphContext` with a fake provider directly, so there is no config
+  switch that could accidentally ship pointing at a fake.
 - **1c:** `EVAL_SCORE_THRESHOLD` is bounded `0-10` with default `7.0`. `rubric.py` must
   either use that scale or the bound needs revisiting.
 
@@ -87,16 +87,40 @@ Decisions and findings from 1a:
   `SQLITE_CHECKPOINT_PATH`. `CHECKPOINTER=postgres` raises `NotImplementedError` rather
   than silently falling back to SQLite.
 
-### 1b. LLM provider (two-tier) + scriptwriter + ideation
-- [ ] `providers/llm.py`: `LLMProvider` Protocol + `OpenRouterProvider` (OpenAI-compatible
+### 1b. LLM provider (two-tier) + scriptwriter + ideation ✅
+- [x] `providers/llm.py`: `LLMProvider` Protocol + `OpenRouterProvider` (OpenAI-compatible
       endpoint `https://openrouter.ai/api/v1`). Model IDs come from env
       (`LLM_DRAFT_MODEL`, `LLM_JUDGE_MODEL`) — never hardcoded (`:free` IDs get retired).
       Include exponential backoff on 429 (failed calls still burn daily quota).
-- [ ] `nodes/scriptwriter.py`: real prompt, uses the **draft** model (a `:free` model).
-- [ ] `nodes/ideation.py`: for now, pick a topic from a seed list (memory retrieval is
-      wired in 3c). Uses the draft model.
-- [ ] Tests with a fake LLM provider (no network) asserting prompt shape + parsing,
+      *Retries only 408/409/429/5xx and transport errors; a 4xx client error is raised
+      immediately rather than burning quota. Jittered exponential backoff capped at 60s;
+      a server `Retry-After` always wins. `usage.include` is set so recorded cost is
+      measured, not estimated.*
+- [x] `nodes/scriptwriter.py`: real prompt, uses the **draft** model (a `:free` model).
+      *On a retry the prompt carries the rejected script and the critic's notes — a retry
+      that cannot see why it failed just resamples. JSON output is requested by prompt and
+      parsed leniently; `response_format` is deliberately unused because many `:free`
+      models reject it outright.*
+- [x] `nodes/ideation.py`: for now, pick a topic from a seed list (memory retrieval is
+      wired in 3c). Uses the draft model. *A caller-supplied topic short-circuits the LLM
+      entirely. The prompt is shaped "here are candidates, pick and sharpen one" so 3c can
+      swap the seed list for retrieval without reshaping it.*
+- [x] Tests with a fake LLM provider (no network) asserting prompt shape + parsing,
       plus a test that a simulated 429 triggers backoff rather than a blind retry.
+      *54 new tests. No test needs a key or touches the network.*
+
+Decisions and findings from 1b:
+- **Dependency injection via LangGraph `context`** (new module `graph/context.py`,
+  `GraphContext`). This is how a node reaches an LLM without importing an SDK (4a).
+  Context is passed per invocation and is deliberately *not* checkpointed — a live HTTP
+  client has no business being serialized into a SQLite row. `ideation` and `scriptwriter`
+  now take `(state, runtime)`; the remaining stubs still take `(state)`, which LangGraph
+  handles by signature inspection.
+- **Two mechanical invariant guards** now exist in the suite, both verified to fail when
+  violated: no node may import a vendor SDK (4a), and every state type must be on the
+  checkpoint allowlist (4c, from 1a).
+- **`extract_json_object`** tolerates ``` fences and surrounding prose. Re-prompting a
+  small model to remove a stray fence would cost quota for nothing.
 
 ### 1c. Eval critic + retry loop  ← highest-value work
 - [ ] `evals/rubric.py`: the shared rubric (e.g. hook strength, clarity, factual-risk flag),

@@ -7,6 +7,7 @@ start, and that promise is only worth anything if something actually proves it.
 
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from collections.abc import Callable, Iterator
 from itertools import pairwise
@@ -17,6 +18,7 @@ import pytest
 
 from videoagent.config import CheckpointerBackend, Settings
 from videoagent.graph import graph as graph_module
+from videoagent.graph.context import GraphContext
 from videoagent.graph.graph import (
     DEFAULT_DURABILITY,
     NODE_NAMES,
@@ -26,6 +28,8 @@ from videoagent.graph.graph import (
 )
 from videoagent.graph.nodes.publish import STUB_RECEIPT_PREFIX
 from videoagent.graph.state import CostEntry, RunStatus, Script, VideoState
+
+from .conftest import FakeLLM
 
 
 @pytest.fixture
@@ -44,6 +48,12 @@ def settings(tmp_path: Path) -> Settings:
 def thread() -> dict[str, Any]:
     """A LangGraph config naming the thread whose state is persisted."""
     return {"configurable": {"thread_id": "test-thread"}}
+
+
+@pytest.fixture
+def context(settings: Settings, fake_llm: FakeLLM) -> GraphContext:
+    """Runtime dependencies for a run. No network, no API key."""
+    return GraphContext(llm=fake_llm, settings=settings)
 
 
 @pytest.fixture
@@ -67,12 +77,16 @@ def _install_spies(
     remaining = {"count": crash_times}
 
     def wrap(node_name: str, original: Callable[..., Any]) -> Callable[..., Any]:
-        async def spy(state: VideoState) -> dict[str, Any]:
+        # LangGraph decides whether to pass `runtime` by inspecting the signature, so the
+        # wrapper has to keep the wrapped node's arity rather than swallowing it in *args.
+        wants_runtime = len(inspect.signature(original).parameters) > 1
+
+        async def spy(state: VideoState, runtime: Any = None) -> dict[str, Any]:
             recorded.append(node_name)
             if node_name == crash_on and remaining["count"] > 0:
                 remaining["count"] -= 1
                 raise RuntimeError(f"simulated crash in {node_name}")
-            return await original(state)
+            return await (original(state, runtime) if wants_runtime else original(state))
 
         return spy
 
@@ -114,13 +128,14 @@ def test_graph_visits_every_node_in_order(settings: Settings, thread: dict[str, 
 
 
 async def test_graph_runs_end_to_end_on_stubs(
-    settings: Settings, thread: dict[str, Any], calls: list[str]
+    settings: Settings, thread: dict[str, Any], calls: list[str], context: GraphContext
 ) -> None:
     async with open_graph(settings) as graph:
         result = await graph.ainvoke(
             {"topic": "why the sky is blue"},
             thread,
             durability=DEFAULT_DURABILITY,
+            context=context,
         )
 
     state = VideoState.model_validate(result)
@@ -135,23 +150,33 @@ async def test_graph_runs_end_to_end_on_stubs(
 
 
 async def test_caller_supplied_topic_survives_ideation(
-    settings: Settings, thread: dict[str, Any]
+    settings: Settings, thread: dict[str, Any], context: GraphContext
 ) -> None:
     """An operator forcing a topic must not have it overwritten."""
     async with open_graph(settings) as graph:
-        result = await graph.ainvoke({"topic": "forced"}, thread, durability=DEFAULT_DURABILITY)
+        result = await graph.ainvoke(
+            {"topic": "forced"}, thread, durability=DEFAULT_DURABILITY, context=context
+        )
     assert result["topic"] == "forced"
 
 
-async def test_cost_ledger_accumulates(settings: Settings, thread: dict[str, Any]) -> None:
-    """Costs append rather than overwrite, and the total is derived from the ledger."""
+async def test_cost_ledger_accumulates(
+    settings: Settings, thread: dict[str, Any], fake_llm: FakeLLM
+) -> None:
+    """Every charging node appends its own entry and the total is derived, not tracked.
+
+    A per-node ledger rather than a running total is what makes the retry loop's real
+    cost visible instead of averaged away (CLAUDE.md section 7).
+    """
+    fake_llm.cost_usd = 0.002
+    context = GraphContext(llm=fake_llm, settings=settings)
+
     async with open_graph(settings) as graph:
-        result = await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY)
+        result = await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY, context=context)
 
     state = VideoState.model_validate(result)
-    assert len(state.costs) == 1
-    assert state.costs[0].node == "assets"
-    assert state.total_cost_usd == 0.0
+    assert [entry.node for entry in state.costs] == ["ideation", "scriptwriter", "assets"]
+    assert state.total_cost_usd == pytest.approx(0.004)
 
 
 # --------------------------------------------------------------------------------------
@@ -160,7 +185,7 @@ async def test_cost_ledger_accumulates(settings: Settings, thread: dict[str, Any
 
 
 async def test_a_checkpoint_is_written_after_each_node(
-    settings: Settings, thread: dict[str, Any]
+    settings: Settings, thread: dict[str, Any], context: GraphContext
 ) -> None:
     """Each node boundary gets its own checkpoint, and the rows genuinely hit disk.
 
@@ -169,7 +194,7 @@ async def test_a_checkpoint_is_written_after_each_node(
     terminal one with nothing left to run, is exactly "a checkpoint after each node".
     """
     async with open_graph(settings) as graph:
-        await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY)
+        await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY, context=context)
         history = [snapshot async for snapshot in graph.aget_state_history(thread)]
 
     poised_before = [snapshot.next for snapshot in reversed(history)]
@@ -184,7 +209,10 @@ async def test_a_checkpoint_is_written_after_each_node(
 
 
 async def test_every_state_type_round_trips_through_the_serializer(
-    settings: Settings, thread: dict[str, Any], caplog: pytest.LogCaptureFixture
+    settings: Settings,
+    thread: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+    context: GraphContext,
 ) -> None:
     """Every custom type in the state is on the checkpoint allowlist.
 
@@ -199,7 +227,9 @@ async def test_every_state_type_round_trips_through_the_serializer(
     """
     with caplog.at_level("WARNING", logger="langgraph.checkpoint.serde.jsonplus"):
         async with open_graph(settings) as graph:
-            await graph.ainvoke({"approved": True}, thread, durability=DEFAULT_DURABILITY)
+            await graph.ainvoke(
+                {"approved": True}, thread, durability=DEFAULT_DURABILITY, context=context
+            )
         async with open_graph(settings) as reopened:
             snapshot = await reopened.aget_state(thread)
 
@@ -244,7 +274,10 @@ async def test_postgres_backend_fails_loudly(tmp_path: Path) -> None:
 
 
 async def test_resume_after_crash_continues_from_the_last_completed_node(
-    settings: Settings, thread: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    settings: Settings,
+    thread: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    context: GraphContext,
 ) -> None:
     """Kill the run inside `render`, rebuild everything, resume: earlier nodes stay done.
 
@@ -257,7 +290,9 @@ async def test_resume_after_crash_continues_from_the_last_completed_node(
 
     async with open_graph(settings) as graph:
         with pytest.raises(RuntimeError, match="simulated crash in render"):
-            await graph.ainvoke({"topic": "resumable"}, thread, durability=DEFAULT_DURABILITY)
+            await graph.ainvoke(
+                {"topic": "resumable"}, thread, durability=DEFAULT_DURABILITY, context=context
+            )
 
     assert recorded == ["ideation", "scriptwriter", "eval_critic", "assets", "render"]
 
@@ -272,7 +307,9 @@ async def test_resume_after_crash_continues_from_the_last_completed_node(
             "assets",
         ]
 
-        result = await resumed_graph.ainvoke(None, thread, durability=DEFAULT_DURABILITY)
+        result = await resumed_graph.ainvoke(
+            None, thread, durability=DEFAULT_DURABILITY, context=context
+        )
 
     state = VideoState.model_validate(result)
     assert state.completed_nodes == list(NODE_NAMES)
@@ -285,11 +322,13 @@ async def test_resume_after_crash_continues_from_the_last_completed_node(
 
 
 async def test_state_survives_a_reopened_database(
-    settings: Settings, thread: dict[str, Any]
+    settings: Settings, thread: dict[str, Any], context: GraphContext
 ) -> None:
     """A completed run's state is readable from a freshly opened checkpointer."""
     async with open_graph(settings) as graph:
-        await graph.ainvoke({"topic": "persisted"}, thread, durability=DEFAULT_DURABILITY)
+        await graph.ainvoke(
+            {"topic": "persisted"}, thread, durability=DEFAULT_DURABILITY, context=context
+        )
 
     async with open_graph(settings) as reopened:
         snapshot = await reopened.aget_state(thread)
@@ -304,11 +343,11 @@ async def test_state_survives_a_reopened_database(
 
 
 async def test_publish_is_skipped_without_approval(
-    settings: Settings, thread: dict[str, Any]
+    settings: Settings, thread: dict[str, Any], context: GraphContext
 ) -> None:
     """No approval means no publish. The gate fails closed (CLAUDE.md 4b)."""
     async with open_graph(settings) as graph:
-        result = await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY)
+        result = await graph.ainvoke({}, thread, durability=DEFAULT_DURABILITY, context=context)
 
     state = VideoState.model_validate(result)
     assert state.approved is None
@@ -318,10 +357,12 @@ async def test_publish_is_skipped_without_approval(
 
 
 async def test_publish_proceeds_once_a_human_approved(
-    settings: Settings, thread: dict[str, Any]
+    settings: Settings, thread: dict[str, Any], context: GraphContext
 ) -> None:
     async with open_graph(settings) as graph:
-        result = await graph.ainvoke({"approved": True}, thread, durability=DEFAULT_DURABILITY)
+        result = await graph.ainvoke(
+            {"approved": True}, thread, durability=DEFAULT_DURABILITY, context=context
+        )
 
     state = VideoState.model_validate(result)
     assert state.status is RunStatus.PUBLISHED
@@ -331,11 +372,13 @@ async def test_publish_proceeds_once_a_human_approved(
 
 
 async def test_republishing_identical_content_does_not_issue_a_new_receipt(
-    settings: Settings, thread: dict[str, Any]
+    settings: Settings, thread: dict[str, Any], context: GraphContext
 ) -> None:
     """A resumed or re-run publish must recognise the content and not double-post."""
     async with open_graph(settings) as graph:
-        first = await graph.ainvoke({"approved": True}, thread, durability=DEFAULT_DURABILITY)
+        first = await graph.ainvoke(
+            {"approved": True}, thread, durability=DEFAULT_DURABILITY, context=context
+        )
 
     second_thread = {"configurable": {"thread_id": "second-run"}}
     async with open_graph(settings) as graph:
@@ -348,6 +391,7 @@ async def test_republishing_identical_content_does_not_issue_a_new_receipt(
             },
             second_thread,
             durability=DEFAULT_DURABILITY,
+            context=context,
         )
 
     assert second["publish_receipt"] == first["publish_receipt"]

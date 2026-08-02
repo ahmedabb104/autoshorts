@@ -15,9 +15,10 @@ Everything external — LLM, TTS, video assets, publishing — sits behind a pro
 interface chosen from the environment, so swapping a retired model or a paid backend is a
 config change, not a code change.
 
-> **Status: Phase 1a complete.** The graph runs end-to-end on stub nodes, checkpoints
-> every node to SQLite, and provably resumes after a crash. The nodes themselves are
-> still stubs — real LLM calls start in Phase 1b. See [PLAN.md](PLAN.md) for the build
+> **Status: Phase 1b complete.** The graph runs end-to-end, checkpoints every node to
+> SQLite, and provably resumes after a crash. Ideation and the scriptwriter make real
+> two-tier OpenRouter calls with quota-aware backoff; the remaining nodes are still stubs.
+> Next up is the eval critic and the retry loop — see [PLAN.md](PLAN.md) for the build
 > order and [CLAUDE.md](CLAUDE.md) for the architecture and its invariants.
 
 ---

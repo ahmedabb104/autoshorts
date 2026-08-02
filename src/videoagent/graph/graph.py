@@ -37,6 +37,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from videoagent.config import CheckpointerBackend, Settings, get_settings
+from videoagent.graph.context import GraphContext
 from videoagent.graph.nodes.approval import approval_node
 from videoagent.graph.nodes.assets import assets_node
 from videoagent.graph.nodes.eval_critic import eval_critic_node
@@ -99,7 +100,9 @@ def build_graph(checkpointer: BaseCheckpointSaver[Any] | None = None) -> Compile
     Pure: no config is read and no connection is opened. Pass `None` only for topology
     inspection — without a checkpointer there is no persistence and no resumability.
     """
-    builder: StateGraph = StateGraph(VideoState)
+    # `context_schema` is how nodes reach the LLM provider without importing an SDK.
+    # Context is passed per invocation and is never checkpointed — see `context.py`.
+    builder: StateGraph = StateGraph(VideoState, context_schema=GraphContext)
 
     sequence = _node_sequence()
     for name, fn in sequence:
