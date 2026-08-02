@@ -15,9 +15,10 @@ Everything external — LLM, TTS, video assets, publishing — sits behind a pro
 interface chosen from the environment, so swapping a retired model or a paid backend is a
 config change, not a code change.
 
-> **Status: Phase 0 complete.** The skeleton, settings, and the check task exist. The
-> graph itself is Phase 1 — see [PLAN.md](PLAN.md) for the build order and
-> [CLAUDE.md](CLAUDE.md) for the architecture and its non-negotiable invariants.
+> **Status: Phase 1a complete.** The graph runs end-to-end on stub nodes, checkpoints
+> every node to SQLite, and provably resumes after a crash. The nodes themselves are
+> still stubs — real LLM calls start in Phase 1b. See [PLAN.md](PLAN.md) for the build
+> order and [CLAUDE.md](CLAUDE.md) for the architecture and its invariants.
 
 ---
 

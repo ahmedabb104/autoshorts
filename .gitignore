@@ -14,4 +14,5 @@ dist/
 # Local run artifacts
 *.sqlite
 *.sqlite3
+data/
 out/

@@ -38,8 +38,6 @@ assets, real posting, and the UI come after the system is proven.
 (ruff + 29 tests), config loads from env.
 
 Open questions surfaced during Phase 0, to settle in the phase that hits them:
-- **1a:** nothing creates the parent dir of `SQLITE_CHECKPOINT_PATH` (`data/`) — `config.py`
-  performs no filesystem side effects on purpose, so the checkpointer must `mkdir` it.
 - **1b:** `LLM_TIER` turned out to be a tier override, so there is still no
   `LLM_PROVIDER` (openrouter|fake) selector for offline tests. Decide whether Phase 1b
   wants one, or whether tests inject a fake provider directly.
@@ -52,15 +50,42 @@ Open questions surfaced during Phase 0, to settle in the phase that hits them:
 
 This is the core portfolio deliverable. No real API spend required.
 
-### 1a. State + graph shell
-- [ ] `graph/state.py`: the Pydantic state schema — topic, script fields (hook/body/cta),
+### 1a. State + graph shell ✅
+- [x] `graph/state.py`: the Pydantic state schema — topic, script fields (hook/body/cta),
       eval score, asset paths, content hash, status enum, cost accumulator, retry count.
-- [ ] `graph/graph.py`: `build_graph()` wiring nodes with a **SQLite checkpointer**.
-- [ ] Stub every node to read/write state and return; graph runs end-to-end on stubs.
-- [ ] Test: run the graph on a fixture; assert state transitions and that a checkpoint row
-      is written after each node.
-- [ ] Test: **resumability** — interrupt after node N, rebuild graph from the checkpointer,
-      resume, assert it continues from N+1 (not from the start).
+      *`completed_nodes` and `costs` are reducer-backed (`operator.add`) so they accumulate
+      instead of last-writer-wins. `content_fingerprint()` hashes topic + script only, so
+      a retry of identical content dedupes.*
+- [x] `graph/graph.py`: `build_graph()` wiring nodes with a **SQLite checkpointer**.
+      *`build_graph(checkpointer)` is pure; `open_checkpointer()`/`open_graph()` own the
+      connection lifecycle. `AsyncSqliteSaver`, `durability="sync"` (LangGraph defaults to
+      `"async"`, which can lose the last node's checkpoint on a hard kill).*
+- [x] Stub every node to read/write state and return; graph runs end-to-end on stubs.
+      *All 8 nodes are `async` — they all do I/O from 1b onward.*
+- [x] Test: run the graph on a fixture; assert state transitions and that a checkpoint row
+      is written after each node. *10 checkpoints for 8 nodes (input + one per node
+      boundary + terminal), asserted both via `aget_state_history` and by counting rows in
+      the SQLite file after the connection closes.*
+- [x] Test: **resumability** — interrupt after node N, rebuild graph from the checkpointer,
+      resume, assert it continues from N+1 (not from the start). *Crash injected inside
+      `render`; graph, checkpointer, and connection all torn down and rebuilt; the four
+      completed nodes each ran exactly once across both halves.*
+
+Decisions and findings from 1a:
+- **LangGraph pinned to 1.x** (was `<0.8`, two majors stale; 1.2.10 now). Required raising
+  langchain-core to `>=1.4.7` and brought `langgraph-checkpoint-sqlite` 3.1.1.
+- **Checkpoint serializer allowlist.** LangGraph only reconstructs allowlisted types when
+  reading a checkpoint. Our Pydantic types were not on it — tolerated with a warning today,
+  blocked in a future release, which would have broken resume at upgrade time.
+  `state.CHECKPOINTED_TYPES` + `graph.build_serde()` register them. **Anything new in
+  `VideoState` that is not a plain builtin must be added to `CHECKPOINTED_TYPES`** — a
+  missing type is *blocked on read* and returns a non-object rather than raising. There is
+  a test for exactly this.
+- **The approval gate is already enforced**, ahead of 1e: `publish` refuses to act unless
+  `approved is True`, so the not-yet-implemented `interrupt()` fails closed, not open.
+- **Resolved from Phase 0:** `open_checkpointer()` creates the parent dir of
+  `SQLITE_CHECKPOINT_PATH`. `CHECKPOINTER=postgres` raises `NotImplementedError` rather
+  than silently falling back to SQLite.
 
 ### 1b. LLM provider (two-tier) + scriptwriter + ideation
 - [ ] `providers/llm.py`: `LLMProvider` Protocol + `OpenRouterProvider` (OpenAI-compatible

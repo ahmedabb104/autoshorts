@@ -28,7 +28,11 @@ is changeable.
 ## 2. Tech stack
 
 - **Language:** Python 3.12+, fully type-hinted.
-- **Orchestration:** LangGraph (+ langchain-core for message types only).
+- **Orchestration:** LangGraph **1.x** (+ langchain-core for message types only).
+  Node functions are `async`. Runs use `durability="sync"` so a hard kill cannot lose the
+  last completed node's checkpoint. Any non-builtin type that can reach the graph state
+  must be listed in `graph/state.py::CHECKPOINTED_TYPES` — LangGraph blocks
+  non-allowlisted types when deserializing a checkpoint.
 - **State:** Pydantic v2 models. No untyped dicts flowing through the graph.
 - **Checkpointer:** SQLite for local dev, Postgres for the "real" deployment story.
   Code against the checkpointer interface so swapping is a config change.
